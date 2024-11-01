@@ -9,6 +9,14 @@ app.use(express.static('public'));
 app.use(express.json())
 app.use(cookieParser())
 
+app.use(function (req, res, next) {
+    res.setHeader('Access-Control-Allow-Origin', "*");
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+    res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type,authorization');
+    res.setHeader('Access-Control-Allow-Credentials', true);
+    next();
+})
+
 require('dotenv').config();
 // database connection
 mongoose.connect(process.env.DBURI)
@@ -17,7 +25,7 @@ mongoose.connect(process.env.DBURI)
         console.log('')
         console.log('*************************** ********************* ***************************')
         console.log('*                                                                           *')
-        console.log('*                           ' + process.env.APP_NAME + ' BACKEND RUNNING                           *')
+        console.log('*                           ' + process.env.APP_NAME + ' BACKEND STARTED                        *')
         console.log('*                                                                           *')
         console.log('*************************** ********************* ***************************')
         console.log('')

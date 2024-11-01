@@ -1,5 +1,8 @@
 const User = require('../models/User')
 const jwt = require('jsonwebtoken')
+const asyncErrorHandler = require('../utils/AsyncErrorHandler')
+const CustomError = require('../utils/CustomError')
+const Address = require('../models/Address')
 
 // error handling
 const handleErrors = (err) => {
@@ -25,20 +28,27 @@ const createToken = (id) => {
     })
 }
 
-const user_create = async (req, res) => {
-    const { firstname, lastname, usertype, mobileno, password, email, otp } = req.body
-    try {
-        const user = await User.create({ firstname, lastname, usertype, mobileno, password, email, otp })
-        const token = createToken(user._id)
-        res.cookie('jwt', token, { httpOnly: true, maxAge: maxAge * 1000 })
-        res.status(201).json({ user: user._id })
-    } catch(err) {
-        const errors = handleErrors(err)
-        res.status(400).json({errors})
+const validateMobileNumber = asyncErrorHandler(async(req, res, next) => {
+    console.log(req.params.mobileno);
+    const validateMobile = await User.findOne({ mobileno: req.params.mobileno })
+    if(validateMobile) {
+        const new_otp = Math.floor(100000 + Math.random() * 900000)
+        const generateOTP = await User.findByIdAndUpdate(validateMobile._id, { otp: new_otp }, { new: true })
+        // send OTP via SMS here
+        res.status(201).json(generateOTP)
     }
-}
+    else {
+        const createUser = await User.create({
+            mobileno: req.params.mobileno,
+        })
+        if(createUser) {
+            // send OTP via SMS here
+            res.status(201).json(createUser)
+        }
+    }
+})
 
-const user_get_all = (req, res) => {
+const getAllUsers = (req, res) => {
     User.find().sort({ createdAt: -1 })
         .then((users) => {
             res.status(201).json({ users })
@@ -49,7 +59,7 @@ const user_get_all = (req, res) => {
         }) 
 }
 
-const user_get_one = (req, res) => {
+const getUser = (req, res) => {
     const id = req.params.id
     User.findById(id)
         .then((user) => {
@@ -61,7 +71,7 @@ const user_get_one = (req, res) => {
         }) 
 }
 
-const user_update = (req, res) => {
+const updateUser = (req, res) => {
     console.log(req.body.id)
     User.findByIdAndUpdate(req.body.id, req.body)
         .then((updated_user) => {
@@ -73,49 +83,13 @@ const user_update = (req, res) => {
         })
 }
 
-const user_delete = (req, res) => {
-    User.findByIdAndDelete(req.params.id)
-        .then((result) => {
-            res.status(201).json(result)
-        })
-        .catch((err) => {
-            res.status(400).json(err)
-        })
-}
-
-const user_validate = async (req, res) => {
-    try {
-        const user = await User.login(req.body.mobileno, req.body.password)
-        if(user.ustat !== 0) {
-            if(user._id) {
-                const token = createToken(user._id)
-                res.cookie('jwt', token, { httpOnly: true, maxAge: maxAge * 1000 })
-                res.status(200).json({ user })
-            }
-            else {
-                res.status(400).json({ user })
-            }
-        }
-        else {
-            res.status(401).json({
-                result: 0,
-                message: 'Unverified mobileno'
-            })
-        }
-    }
-    catch(err) {
-        console.log(err)
-        res.status(400).json({ err })
-    }
-}
-
-const otp_verify = async (req, res) => {
+const verifyOTP = async (req, res) => {
     const valid = await User.findOne({ mobileno: req.body.mobileno, otp: req.body.otp })
     let obj = {}
 
     if(valid) {
         // check if OTP hasn't timed out
-        let newDate = new Date(valid.createdAt).valueOf()
+        let newDate = new Date(valid.updatedAt).valueOf()
         let now = new Date().valueOf()
         let diff = now - newDate
         if(diff > process.env.OTP_TIMEOUT) {
@@ -128,14 +102,43 @@ const otp_verify = async (req, res) => {
             res.status(401).json(obj)
         }
         else {
-            // OTP has ot timed out, proceed to verifying user's mobile number
-            User.findByIdAndUpdate(valid._id, { ustat: 1 })
-                .then((result) => {
-                    obj = {
-                        result: 1,
-                        message: 'OTP validated'
-                    }
-                    res.status(201).json(obj)
+            // OTP has not timed out, proceed to verifying user's mobile number
+            User.findByIdAndUpdate(valid._id, { status: 1 })
+                .then(async(result) => {
+                    const userInfo = await User.aggregate([
+                        {
+                            $match: {
+                                _id: result._id
+                            }
+                        },
+                        {
+                            $lookup: {
+                                from: 'addresses',
+                                localField: '_id',
+                                foreignField: 'userId',
+                                as: 'addresses'
+                            }
+                        },
+                        {
+                            $lookup: {
+                                from: 'avatars',
+                                localField: '_id',
+                                foreignField: 'userId',
+                                as: 'userAvatar'
+                            }
+                        },
+                        {
+                            $unwind: {
+                                path: '$userAvatar',
+                                preserveNullAndEmptyArrays: true
+                            }
+                        }
+                    ])
+                    const token = createToken(result._id)
+                    res.status(201).json({
+                        token,
+                        userInfo
+                    })
                 })
                 .catch((err) => {
                     console.log(err)
@@ -150,7 +153,7 @@ const otp_verify = async (req, res) => {
     }
 }
 
-const otp_generate = async (req, res) => {
+const regenerateOTP = async (req, res) => {
     const new_otp = Math.floor(100000 + Math.random() * 900000)
     const user = await User.findOne({ mobileno: req.body.mobileno })
     User.findByIdAndUpdate(user._id, { otp: new_otp })
@@ -171,7 +174,33 @@ const otp_generate = async (req, res) => {
         })
 }
 
+const updateFCMToken = asyncErrorHandler(async(req, res, next) => {
+    const fcm = await User.findOne({
+        _id: req.body._id,
+        fcmToken: req.body.fcmToken
+    })
+    if(!fcm) {
+        const updateToken = await User.findByIdAndUpdate( req.body._id, { fcmToken: req.body.fcmToken }, { new: true })
+        if(updateToken) {
+            res.status(201).json({
+                    status: 201,
+                    message: 'FCM token updated',
+                    updateToken
+                })
+        }
+        else {
+            const err = new CustomError('Error updating FCM token')
+            next(err)
+        }
+    }
+    else {
+        res.status(201).json({
+            status: 201,
+            message: 'FCM token is the same. Ignoring'
+        })
+    }
+})
+
 module.exports = {
-    user_create, user_get_all, user_get_one, user_update, user_delete,
-    user_validate, otp_verify, otp_generate
+    validateMobileNumber, getAllUsers, getUser, updateUser, verifyOTP, regenerateOTP, updateFCMToken
 }
