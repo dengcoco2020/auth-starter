@@ -28,6 +28,7 @@ const createToken = (id) => {
     })
 }
 
+
 const validateMobileNumber = asyncErrorHandler(async(req, res, next) => {
     console.log(req.params.mobileno);
     const validateMobile = await User.findOne({ mobileno: req.params.mobileno })
